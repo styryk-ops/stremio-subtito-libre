@@ -104,6 +104,14 @@ async function getOrTranslate(sourceUrl) {
 // /subtitles/:type/:id/:extra.json (con datos extra como el hash del video).
 // Registramos ambas rutas apuntando al mismo handler para no perder pedidos,
 // que es la causa mas comun de que un addon de subtitulos "no aparezca".
+//
+// IMPORTANTE: este handler NO traduce nada todavia. Solo busca si existe un
+// subtitulo en ingles y devuelve la URL donde Stremio puede buscarlo. Stremio
+// llama a este endpoint automaticamente para varios episodios a la vez (por
+// ejemplo al precargar el siguiente capitulo), asi que si tradujeramos aca
+// gastariamos cuota de las APIs por episodios que capaz nunca mires. La
+// traduccion real se dispara recien en la ruta /subs/:key.srt, que solo se
+// pide cuando elegis "Subtito Libre" en el menu de subtitulos del reproductor.
 async function subtitlesHandler(req, res) {
   try {
     const { type } = req.params;
@@ -117,8 +125,8 @@ async function subtitlesHandler(req, res) {
       return res.json({ subtitles: [] });
     }
 
-    const key = await getOrTranslate(sourceUrl);
-    const publicUrl = `${req.protocol}://${req.get('host')}/subs/${key}.srt`;
+    const key = cacheKeyFor(sourceUrl);
+    const publicUrl = `${req.protocol}://${req.get('host')}/subs/${key}.srt?src=${encodeURIComponent(sourceUrl)}`;
 
     res.json({
       subtitles: [
@@ -138,12 +146,32 @@ async function subtitlesHandler(req, res) {
 app.get('/subtitles/:type/:id.json', subtitlesHandler);
 app.get('/subtitles/:type/:id/:extra.json', subtitlesHandler);
 
-// ---------- Sirve los .srt ya traducidos y cacheados ----------
-app.get('/subs/:key.srt', (req, res) => {
-  const cachePath = cachePathFor(req.params.key);
-  if (!fs.existsSync(cachePath)) return res.status(404).send('No encontrado');
-  res.setHeader('Content-Type', 'text/plain; charset=utf-8');
-  res.sendFile(cachePath);
+// ---------- Sirve los .srt, traduciendo recien aca si hace falta ----------
+// Este es el momento real de "boton de traducir": solo se llega hasta aca
+// cuando elegiste ese subtitulo en el reproductor y Stremio va a mostrarlo.
+app.get('/subs/:key.srt', async (req, res) => {
+  const { key } = req.params;
+  const cachePath = cachePathFor(key);
+
+  try {
+    if (!fs.existsSync(cachePath)) {
+      const src = req.query.src;
+      if (!src) {
+        return res.status(404).send('No encontrado (falta el subtitulo de origen)');
+      }
+      await getOrTranslate(decodeURIComponent(src));
+    }
+
+    if (!fs.existsSync(cachePath)) {
+      return res.status(500).send('No se pudo generar el subtitulo');
+    }
+
+    res.setHeader('Content-Type', 'text/plain; charset=utf-8');
+    res.sendFile(cachePath);
+  } catch (err) {
+    console.error('[subs] error:', err.message);
+    res.status(502).send('Error traduciendo el subtitulo, proba de nuevo en un rato');
+  }
 });
 
 app.listen(PORT, () => {
