@@ -21,6 +21,16 @@ if (!fs.existsSync(CACHE_DIR)) fs.mkdirSync(CACHE_DIR, { recursive: true });
 
 const app = express();
 
+// Permite que Stremio (desde cualquier dispositivo: PC, celular, Smart TV)
+// pueda pedirle datos a este addon. Sin esto, el navegador/Stremio bloquea
+// el pedido por seguridad (CORS) y da "Failed to fetch".
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET, OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type');
+  next();
+});
+
 // ---------- Manifest ----------
 const manifest = {
   id: 'community.subtitolibre',
