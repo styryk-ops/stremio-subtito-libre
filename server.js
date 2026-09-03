@@ -57,6 +57,48 @@ function cachePathFor(key) {
   return path.join(CACHE_DIR, `${key}.srt`);
 }
 
+// Stremio a veces manda el mismo pedido de subtitulo dos veces casi
+// simultaneas (por ejemplo al mostrar la vista previa y al arrancar la
+// reproduccion). Sin esto, cada pedido dispara su propia traduccion completa
+// en paralelo, gastando el doble de cuota de las APIs por nada. Este mapa
+// guarda la traduccion "en curso" por clave, asi el segundo pedido espera el
+// mismo resultado del primero en vez de arrancar una traduccion nueva.
+const inFlightTranslations = new Map();
+
+async function getOrTranslate(sourceUrl) {
+  const key = cacheKeyFor(sourceUrl);
+  const cachePath = cachePathFor(key);
+
+  if (fs.existsSync(cachePath)) {
+    console.log(`[subtitles] usando cache: ${cachePath}`);
+    return key;
+  }
+
+  if (inFlightTranslations.has(key)) {
+    console.log('[subtitles] ya hay una traduccion de este subtitulo en curso, esperando esa misma...');
+    await inFlightTranslations.get(key);
+    return key;
+  }
+
+  const job = (async () => {
+    console.log(`[subtitles] traduciendo subtitulo nuevo: ${sourceUrl}`);
+    const rawSrt = await downloadSrt(sourceUrl);
+    const blocks = parseSrt(rawSrt);
+    const translatedBlocks = await translateBlocks(blocks);
+    const outSrt = buildSrt(translatedBlocks);
+    fs.writeFileSync(cachePath, outSrt, 'utf8');
+  })();
+
+  inFlightTranslations.set(key, job);
+  try {
+    await job;
+  } finally {
+    inFlightTranslations.delete(key);
+  }
+
+  return key;
+}
+
 // ---------- Endpoint de subtitulos (lo que consulta Stremio) ----------
 // Stremio a veces pide /subtitles/:type/:id.json y a veces
 // /subtitles/:type/:id/:extra.json (con datos extra como el hash del video).
@@ -75,21 +117,7 @@ async function subtitlesHandler(req, res) {
       return res.json({ subtitles: [] });
     }
 
-    const key = cacheKeyFor(sourceUrl);
-    const cachePath = cachePathFor(key);
-
-    // Si ya esta traducido y cacheado, lo servimos directo sin gastar tokens de nuevo
-    if (!fs.existsSync(cachePath)) {
-      console.log(`[subtitles] traduciendo subtitulo nuevo: ${sourceUrl}`);
-      const rawSrt = await downloadSrt(sourceUrl);
-      const blocks = parseSrt(rawSrt);
-      const translatedBlocks = await translateBlocks(blocks);
-      const outSrt = buildSrt(translatedBlocks);
-      fs.writeFileSync(cachePath, outSrt, 'utf8');
-    } else {
-      console.log(`[subtitles] usando cache: ${cachePath}`);
-    }
-
+    const key = await getOrTranslate(sourceUrl);
     const publicUrl = `${req.protocol}://${req.get('host')}/subs/${key}.srt`;
 
     res.json({
