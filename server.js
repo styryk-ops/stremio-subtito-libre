@@ -58,14 +58,20 @@ function cachePathFor(key) {
 }
 
 // ---------- Endpoint de subtitulos (lo que consulta Stremio) ----------
-// Formato esperado por Stremio: /subtitles/:type/:id.json  (id puede venir con ":" escapado)
-app.get('/subtitles/:type/:id.json', async (req, res) => {
+// Stremio a veces pide /subtitles/:type/:id.json y a veces
+// /subtitles/:type/:id/:extra.json (con datos extra como el hash del video).
+// Registramos ambas rutas apuntando al mismo handler para no perder pedidos,
+// que es la causa mas comun de que un addon de subtitulos "no aparezca".
+async function subtitlesHandler(req, res) {
   try {
     const { type } = req.params;
     const id = decodeURIComponent(req.params.id);
 
+    console.log(`[subtitles] pedido recibido: type=${type} id=${id}`);
+
     const sourceUrl = await findEnglishSubtitleUrl(type, id);
     if (!sourceUrl) {
+      console.log('[subtitles] no se encontro subtitulo en ingles para este contenido');
       return res.json({ subtitles: [] });
     }
 
@@ -99,7 +105,10 @@ app.get('/subtitles/:type/:id.json', async (req, res) => {
     console.error('[subtitles] error:', err.message);
     res.json({ subtitles: [] }); // Stremio prefiere lista vacia antes que un error duro
   }
-});
+}
+
+app.get('/subtitles/:type/:id.json', subtitlesHandler);
+app.get('/subtitles/:type/:id/:extra.json', subtitlesHandler);
 
 // ---------- Sirve los .srt ya traducidos y cacheados ----------
 app.get('/subs/:key.srt', (req, res) => {
